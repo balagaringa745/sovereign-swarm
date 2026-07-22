@@ -1,0 +1,57 @@
+name: Sovereign Swarm Worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      worker_id:
+        description: "Worker ID (e.g. worker-001)"
+        required: true
+        default: "worker-001"
+      repeat_count:
+        description: "How many WET file batches to process"
+        required: false
+        default: "100"
+
+jobs:
+  swarm-worker:
+    name: "Worker ${{ github.event.inputs.worker_id }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.toml') }}
+
+      - name: Build worker binary
+        run: cargo build --release --bin worker
+
+      - name: Run Sovereign Worker Loop
+        env:
+          MASTER_VM_IP: ${{ secrets.MASTER_VM_IP }}
+          WORKER_ID: ${{ github.event.inputs.worker_id }}
+          REPEAT: ${{ github.event.inputs.repeat_count }}
+        run: |
+          echo "=== Sovereign Swarm Worker Starting ==="
+          echo "Worker ID: $WORKER_ID"
+          echo "Master VM: $MASTER_VM_IP"
+          
+          count=0
+          while [ $count -lt $REPEAT ]; do
+            echo "--- Batch $((count+1))/$REPEAT ---"
+            ./target/release/worker "$WORKER_ID-batch$count" || echo "[!] Batch failed, continuing..."
+            count=$((count+1))
+            sleep 2
+          done
+          echo "=== Worker Complete ==="

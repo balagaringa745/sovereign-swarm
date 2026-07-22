@@ -41,7 +41,7 @@ async fn flush_map(
     });
 
     client
-        .post(&format!("http://{}:8085/data", std::env::var("MASTER_VM_IP").unwrap_or_else(|_| "98.86.242.147".to_string())))
+        .post(&format!("http://{}:8085/data", std::env::var("MASTER_VM_IP").unwrap_or_else(|_| "52.201.247.138".to_string())))
         .json(&payload)
         .send()
         .await?
@@ -109,7 +109,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // --- 1. Get Task ---
     let task_resp = client
         .get(format!(
-            "http://{}:8085/get_task?colab_id={}", std::env::var("MASTER_VM_IP").unwrap_or_else(|_| "98.86.242.147".to_string()),,
+            "http://{}:8085/get_task?colab_id={}", std::env::var("MASTER_VM_IP").unwrap_or_else(|_| "52.201.247.138".to_string()),,
             worker_id
         ))
         .send()
@@ -227,7 +227,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // --- 4. Mark batch complete ---
     println!("[*] Marking batch complete...");
     client
-        .post(&format!("http://{}:8085/complete_task", std::env::var("MASTER_VM_IP").unwrap_or_else(|_| "98.86.242.147".to_string())))
+        .post(&format!("http://{}:8085/complete_task", std::env::var("MASTER_VM_IP").unwrap_or_else(|_| "52.201.247.138".to_string())))
         .json(&serde_json::json!({
             "dump_id": dump_id,
             "start_index": start_idx

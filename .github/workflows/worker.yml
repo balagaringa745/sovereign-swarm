@@ -3,20 +3,22 @@ name: Sovereign Swarm Worker
 on:
   workflow_dispatch:
     inputs:
-      worker_id:
-        description: "Worker ID (e.g. worker-001)"
-        required: true
-        default: "worker-001"
       repeat_count:
         description: "How many WET file batches to process"
         required: false
-        default: "100"
+        default: "300"
+  schedule:
+    - cron: "0 */5 * * *"
 
 jobs:
   swarm-worker:
-    name: "Worker ${{ github.event.inputs.worker_id }}"
+    name: "Worker ${{ matrix.worker }}"
     runs-on: ubuntu-latest
     timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        worker: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
 
     steps:
       - name: Checkout
@@ -40,8 +42,8 @@ jobs:
       - name: Run Sovereign Worker Loop
         env:
           MASTER_VM_IP: ${{ secrets.MASTER_VM_IP }}
-          WORKER_ID: ${{ github.event.inputs.worker_id }}
-          REPEAT: ${{ github.event.inputs.repeat_count }}
+          WORKER_ID: ${{ github.actor }}-worker-${{ matrix.worker }}
+          REPEAT: ${{ github.event.inputs.repeat_count || '300' }}
         run: |
           echo "=== Sovereign Swarm Worker Starting ==="
           echo "Worker ID: $WORKER_ID"

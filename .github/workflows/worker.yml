@@ -48,7 +48,6 @@ jobs:
           echo "=== Sovereign Swarm Worker Starting ==="
           echo "Worker ID: $WORKER_ID"
           echo "Master VM: $MASTER_VM_IP"
-          
           count=0
           while [ $count -lt $REPEAT ]; do
             echo "--- Batch $((count+1))/$REPEAT ---"

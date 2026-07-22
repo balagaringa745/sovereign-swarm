@@ -109,7 +109,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // --- 1. Get Task ---
     let task_resp = client
         .get(format!(
-            "http://{}:8085/get_task?colab_id={}", std::env::var("MASTER_VM_IP").unwrap_or_else(|_| "52.201.247.138".to_string()),,
+            "http://{}:8085/get_task?colab_id={}", std::env::var("MASTER_VM_IP").unwrap_or_else(|_| "52.201.247.138".to_string()),
             worker_id
         ))
         .send()

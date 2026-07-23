@@ -7,8 +7,6 @@ on:
         description: "How many WET file batches to process"
         required: false
         default: "300"
-  schedule:
-    - cron: "0 */2 * * *"
 
 jobs:
   swarm-worker:

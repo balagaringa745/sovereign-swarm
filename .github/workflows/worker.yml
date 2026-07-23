@@ -8,7 +8,7 @@ on:
         required: false
         default: "300"
   schedule:
-    - cron: "0 */5 * * *"
+    - cron: "0 */2 * * *"
 
 jobs:
   swarm-worker:

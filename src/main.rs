@@ -41,7 +41,7 @@ async fn flush_map(
     });
 
     client
-        .post(&format!("http://{}:8085/data", std::env::var("MASTER_VM_IP").unwrap_or_else(|_| "52.201.247.138".to_string())))
+        .post(&format!("http://{}:8085/data", std::env::var("MASTER_VM_IP").expect("MASTER_VM_IP not set")))
         .json(&payload)
         .send()
         .await?
@@ -109,8 +109,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // --- 1. Get Task ---
     let task_resp = client
         .get(format!(
-            "http://{}:8085/get_task?colab_id={}", std::env::var("MASTER_VM_IP").unwrap_or_else(|_| "52.201.247.138".to_string()),
-            worker_id
+            "http://{}:8085/get_task?colab_id={}", std::env::var("MASTER_VM_IP").unwrap(), worker_id
         ))
         .send()
         .await?
@@ -148,6 +147,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let all_paths: Vec<&str> = paths_text.lines().collect();
 
     // --- 3. Process each WET file in the batch ---
+    
+    let mut file_tasks = Vec::new();
+    let file_semaphore = Arc::new(Semaphore::new(5)); // Process up to 5 files in parallel
+
     for current_path_idx in resume_idx..end_idx {
         if current_path_idx as usize >= all_paths.len() {
             println!("[!] path_index {} out of bounds!", current_path_idx);
@@ -157,77 +160,84 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             "https://data.commoncrawl.org/{}",
             all_paths[current_path_idx as usize]
         );
-        println!("[*] File {}/{}: {}", current_path_idx + 1, end_idx, wet_url);
+        println!("[*] Starting File {}/{}: {}", current_path_idx + 1, end_idx, wet_url);
 
-        // Download + decompress, then free compressed bytes immediately
-        let buffer = {
-            let dl_start = Instant::now();
-            let compressed = client.get(&wet_url).send().await?.error_for_status()?.bytes().await?.to_vec();
-            println!("[*] Downloaded {} MB in {:.2?}", compressed.len() / 1_048_576, dl_start.elapsed());
-            let mut buf = String::with_capacity(300 * 1_048_576);
-            MultiGzDecoder::new(&compressed[..]).read_to_string(&mut buf)?;
-            buf // compressed dropped here → RAM freed
-        };
+        let permit = file_semaphore.clone().acquire_owned().await.unwrap();
+        let client_c = client.clone();
+        let worker_id_c = worker_id.clone();
+        let dump_id_c = dump_id.clone();
 
-        let parse_start = Instant::now();
-        let bytes = buffer.as_bytes(); // zero-copy slice
+        let handle = tokio::spawn(async move {
+            let _p = permit;
+            // Download + decompress
+            let buffer = {
+                let dl_start = Instant::now();
+                match client_c.get(&wet_url).send().await {
+                    Ok(resp) => {
+                        match resp.error_for_status() {
+                            Ok(res) => {
+                                match res.bytes().await {
+                                    Ok(compressed) => {
+                                        println!("[*] Downloaded {} MB in {:.2?}", compressed.len() / 1_048_576, dl_start.elapsed());
+                                        let mut buf = String::with_capacity(300 * 1_048_576);
+                                        if let Err(e) = flate2::read::MultiGzDecoder::new(&compressed[..]).read_to_string(&mut buf) {
+                                            eprintln!("[!] Decompression error: {}", e);
+                                            return;
+                                        }
+                                        buf
+                                    },
+                                    Err(_) => return,
+                                }
+                            },
+                            Err(_) => return,
+                        }
+                    },
+                    Err(_) => return,
+                }
+            };
 
-        let mut freq_map: HashMap<String, u32> = HashMap::with_capacity(CHUNK_LIMIT);
-        let mut upload_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
-        let mut chunks_sent = 0usize;
-        let semaphore = Arc::new(Semaphore::new(3));
+            let parse_start = Instant::now();
+            let bytes = buffer.as_bytes();
 
-        // === SPEC-COMPLIANT PATTERN EXTRACTION ===
+            let mut freq_map: HashMap<String, u32> = HashMap::with_capacity(CHUNK_LIMIT);
+            let mut upload_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+            let mut chunks_sent = 0usize;
+            let semaphore = Arc::new(Semaphore::new(3));
 
-        // Pass 1: Character Unigrams (max ~256 unique — never triggers flush)
-        for &b in bytes.iter() {
-            let key = String::from_utf8_lossy(&[b]).into_owned(); // FIX #1: Safe for all byte values
-            *freq_map.entry(key).or_insert(0) += 1;
-        }
-        println!("[*] Unigrams done ({} unique)", freq_map.len());
+            for &b in bytes.iter() {
+                let key = String::from_utf8_lossy(&[b]).into_owned();
+                *freq_map.entry(key).or_insert(0) += 1;
+            }
+            
+            for window in bytes.windows(2) {
+                let key = String::from_utf8_lossy(window).into_owned();
+                *freq_map.entry(key).or_insert(0) += 1;
+            }
 
-        // Pass 2: Character Bigrams (max ~65K unique — cannot hit 500K limit)
-        for window in bytes.windows(2) {
-            let key = String::from_utf8_lossy(window).into_owned();
-            *freq_map.entry(key).or_insert(0) += 1;
-        }
-        println!("[*] Bigrams done ({} unique)", freq_map.len());
+            for window in bytes.windows(3) {
+                let key = String::from_utf8_lossy(window).into_owned();
+                *freq_map.entry(key).or_insert(0) += 1;
+                maybe_flush(&mut freq_map, &mut upload_tasks, &mut chunks_sent, &semaphore, &client_c, &worker_id_c, &dump_id_c, start_idx, current_path_idx, false).await;
+            }
 
-        // Pass 3: Character Trigrams (dominant — may flush multiple times)
-        for window in bytes.windows(3) {
-            let key = String::from_utf8_lossy(window).into_owned();
-            *freq_map.entry(key).or_insert(0) += 1;
-            maybe_flush(
-                &mut freq_map, &mut upload_tasks, &mut chunks_sent,
-                &semaphore, &client, &worker_id, &dump_id,
-                start_idx, current_path_idx, false,
-            ).await;
-        }
-        println!("[*] Trigrams done ({} unique)", freq_map.len());
+            maybe_flush(&mut freq_map, &mut upload_tasks, &mut chunks_sent, &semaphore, &client_c, &worker_id_c, &dump_id_c, start_idx, current_path_idx, true).await;
 
-        // Final flush for remaining patterns
-        maybe_flush(
-            &mut freq_map, &mut upload_tasks, &mut chunks_sent,
-            &semaphore, &client, &worker_id, &dump_id,
-            start_idx, current_path_idx, true,
-        ).await;
+            for h in upload_tasks { let _ = h.await; }
 
-        // Wait for all uploads for this file
-        for h in upload_tasks { let _ = h.await; }
-
-        println!(
-            "[*] File {} done in {:.2?} ({} chunks sent)",
-            current_path_idx,
-            parse_start.elapsed(),
-            chunks_sent
-        );
-        drop(buffer); // free decompressed text before next file
+            println!("[*] File {} done in {:.2?} ({} chunks sent)", current_path_idx, parse_start.elapsed(), chunks_sent);
+        });
+        file_tasks.push(handle);
     }
+
+    for h in file_tasks {
+        let _ = h.await;
+    }
+
 
     // --- 4. Mark batch complete ---
     println!("[*] Marking batch complete...");
     client
-        .post(&format!("http://{}:8085/complete_task", std::env::var("MASTER_VM_IP").unwrap_or_else(|_| "52.201.247.138".to_string())))
+        .post(&format!("http://{}:8085/complete_task", std::env::var("MASTER_VM_IP").unwrap()))
         .json(&serde_json::json!({
             "dump_id": dump_id,
             "start_index": start_idx

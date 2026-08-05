@@ -7,8 +7,6 @@ on:
         description: "How many WET file batches to process"
         required: false
         default: "300"
-  schedule:
-    - cron: "0 */5 * * *"
 
 jobs:
   swarm-worker:
@@ -48,7 +46,6 @@ jobs:
           echo "=== Sovereign Swarm Worker Starting ==="
           echo "Worker ID: $WORKER_ID"
           echo "Master VM: $MASTER_VM_IP"
-          
           count=0
           while [ $count -lt $REPEAT ]; do
             echo "--- Batch $((count+1))/$REPEAT ---"
